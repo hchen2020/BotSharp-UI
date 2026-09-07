@@ -117,6 +117,21 @@
 	let editingBotMsgUid = $state('');
 	let highlightedMsgId = $state('');
 	let indication = $state('');
+
+	/**
+	 * Where the agent's browser can be watched RIGHT NOW, when it is driving one.
+	 *
+	 * Pinned above the composer rather than put in the thread, and that placement is the whole
+	 * point. The link is per-run and short-lived — an agent walking a flow node by node starts a
+	 * new run for every node, and each node's link dies with it — so a link left in the transcript
+	 * is a dead link within a minute or two, and a fifteen-node flow left fifteen of them. Pinned,
+	 * there is exactly one on screen and it is always the step running now.
+	 *
+	 * Arrives on the indication, after a `|` (see `onIndicationReceived`). Cleared only by
+	 * `resetProgress`, i.e. at the end of a turn — which for a flow is when the whole flow is
+	 * done, and is exactly when there is no longer a browser to watch.
+	 */
+	let liveViewUrl = $state('');
 	/**
 	 * Wall clock (ms) the progress line currently on screen started at, and its age in whole
 	 * seconds. `progressSince === 0` means nothing is being timed — no wait has begun since
@@ -1172,6 +1187,9 @@
 		progressStep = 0;
 		progressSince = 0;
 		progressElapsed = 0;
+		// The turn is over, so there is no browser left to watch. What survives the flow is the
+		// RECORDING, and that link is written into the thread by whoever ran the flow.
+		liveViewUrl = '';
 	}
 
 	/** `m:ss`. Minutes run past 60 rather than growing an hours field no run needs. */
@@ -1194,7 +1212,34 @@
 	function onIndicationReceived(message) {
 		isThinking = true;
 		startProgressClock();
-		trackProgress((message.indication || '').split('|')[0]);
+
+		// `text|url`. The first field has always been the progress line; anything after it was
+		// discarded. The second is now the live view of whatever browser this step is driving.
+		const parts = (message.indication || '').split('|');
+
+		// Read BEFORE trackProgress, and independently of it. trackProgress drops a line that is
+		// already showing — it is not a new step and must not restart the clock — and a backend
+		// that repeats its progress line while moving to a new run would otherwise have no way to
+		// hand over the new link.
+		trackLiveView(parts[1]);
+		trackProgress(parts[0]);
+	}
+
+	/**
+	 * Adopts a live-view URL, or leaves the current one alone.
+	 *
+	 * An indication with no URL does NOT clear the pin. Most steps of a flow send none — the
+	 * backend only knows one when a browser task has just been handed out — and clearing on those
+	 * would make the link flicker away between every pair of steps. It ends with the turn instead,
+	 * in `resetProgress`.
+	 *
+	 * @param {string | undefined} url
+	 */
+	function trackLiveView(url) {
+		const next = (url || '').trim();
+		if (next) {
+			liveViewUrl = next;
+		}
 	}
 
 	/** @param {import('$conversationTypes').ChatResponseModel} message */
@@ -2946,6 +2991,26 @@
 					</div>
 
 					<div class={`cb-input-section cb-css-animation ${!loadEditor ? 'cb-input-hide' : 'cb-fade-in'}`}>
+						<!--
+							The agent is driving a browser and you can watch it. Pinned here rather
+							than posted into the thread because the link belongs to the step running
+							NOW: it expires with that step, so in the transcript it would be a dead
+							link a minute later, one per step. Here there is one, and it is current.
+						-->
+						{#if liveViewUrl}
+							<div class="cb-live-view-strip">
+								<a
+									class="cb-live-view-link"
+									href={liveViewUrl}
+									target="_blank"
+									rel="noreferrer"
+								>
+									<i class="mdi mdi-monitor-eye" aria-hidden="true"></i>
+									<span>Watch the execution</span>
+								</a>
+								<span class="cb-live-view-note">take the controls if it needs a hand</span>
+							</div>
+						{/if}
 						<div class="cb-input-row">
 							<div class="cb-col-auto">
 								{#if PUBLIC_LIVECHAT_VOICE_ENABLED === 'true' && !disableSpeech}
