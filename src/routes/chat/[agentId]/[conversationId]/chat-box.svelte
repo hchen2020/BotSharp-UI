@@ -127,11 +127,19 @@
 	 * is a dead link within a minute or two, and a fifteen-node flow left fifteen of them. Pinned,
 	 * there is exactly one on screen and it is always the step running now.
 	 *
-	 * Arrives on the indication, after a `|` (see `onIndicationReceived`). Cleared only by
-	 * `resetProgress`, i.e. at the end of a turn — which for a flow is when the whole flow is
-	 * done, and is exactly when there is no longer a browser to watch.
+	 * Arrives on the indication, after a `|` (see `onIndicationReceived`). Held until
+	 * `resetProgress`, but not necessarily SHOWN that long — see `showLiveView`, which is what
+	 * the strip renders on.
 	 */
 	let liveViewUrl = $state('');
+	/**
+	 * How many messages the thread held when the pin above was adopted.
+	 *
+	 * The pin is retired by the note that reports the run it points at, and "reports" means
+	 * ARRIVES AFTER — every note of one flow carries the same session id, so without a mark the
+	 * first one would retire every later step's pin too.
+	 */
+	let liveViewMark = $state(0);
 	/**
 	 * Wall clock (ms) the progress line currently on screen started at, and its age in whole
 	 * seconds. `progressSince === 0` means nothing is being timed — no wait has begun since
@@ -302,6 +310,41 @@
 		if (lastLink < 0 || lastLink <= lastUser) return null;
 
 		return liveRunIdInText(dialogs[lastLink]?.rich_content?.message?.text || dialogs[lastLink]?.text);
+	});
+
+	/**
+	 * Whether the pin above the composer is still TRUE — whether there is a browser running right
+	 * now that this link would show you.
+	 *
+	 * Separate from HOLDING the url, because the two end at different moments and the pin used to
+	 * outlive both. The strip rendered on `liveViewUrl` alone, which only `resetProgress` clears —
+	 * and that runs on the user's next message or on Stop, never when the agent simply finishes.
+	 * So a completed flow sat under "Watch the execution · take the controls if it needs a hand"
+	 * indefinitely, offering the controls of a browser that had closed minutes earlier.
+	 *
+	 * Two ways it stops being true, and a finished flow hits both:
+	 *
+	 *   the turn ended       → nothing is running, whatever the last link said
+	 *   its run has reported → the note offering to REPLAY that run is the run saying it is over
+	 *
+	 * The second is the one a reader sees first: OneFlow offers the recording on the note that
+	 * closes the flow ("Replay the action"), and a live pin under a replay offer for the same run
+	 * is two contradictory things about one browser. Matched on the run id, not on the wording —
+	 * the producers word these notes several ways on purpose, see `isBareLiveLink` — and only over
+	 * notes that arrived after the pin, which is what `liveViewMark` is for.
+	 */
+	let showLiveView = $derived.by(() => {
+		if (!liveViewUrl || !isWaiting) return false;
+
+		const runId = liveRunIdInText(liveViewUrl);
+		if (!runId) return true;
+
+		for (let i = liveViewMark; i < dialogs.length; i++) {
+			const msg = dialogs[i];
+			if (!BOT_SENDERS.includes(msg?.sender?.role || '')) continue;
+			if (liveRunIdInText(msg?.rich_content?.message?.text || msg?.text) === runId) return false;
+		}
+		return true;
 	});
 
 	/** When the live-view link on screen stops working, or null when nothing on screen expires. */
@@ -1190,6 +1233,7 @@
 		// The turn is over, so there is no browser left to watch. What survives the flow is the
 		// RECORDING, and that link is written into the thread by whoever ran the flow.
 		liveViewUrl = '';
+		liveViewMark = 0;
 	}
 
 	/** `m:ss`. Minutes run past 60 rather than growing an hours field no run needs. */
@@ -1239,6 +1283,9 @@
 		const next = (url || '').trim();
 		if (next) {
 			liveViewUrl = next;
+			// Every note already in the thread is about an earlier step, so only what lands from
+			// here on can retire this pin. See `showLiveView`.
+			liveViewMark = dialogs.length;
 		}
 	}
 
@@ -2997,7 +3044,7 @@
 							NOW: it expires with that step, so in the transcript it would be a dead
 							link a minute later, one per step. Here there is one, and it is current.
 						-->
-						{#if liveViewUrl}
+						{#if showLiveView}
 							<div class="cb-live-view-strip">
 								<a
 									class="cb-live-view-link"
